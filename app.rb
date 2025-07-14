@@ -63,9 +63,9 @@ class FirebrandApp
 
   def headers_json
     {
-      'Content-Type' => 'application/json',
-      'Access-Control-Allow-Origin' => '*',
-      'Access-Control-Allow-Methods' => 'GET'
+      'content-type' => 'application/json',
+      'access-control-allow-origin' => '*',
+      'access-control-allow-methods' => 'get'
     }
   end
 end
