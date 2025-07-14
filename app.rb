@@ -39,7 +39,7 @@ class FirebrandApp
       {
         error: 'Internal Server Error',
         message: error.message,
-        timestamp: Time.zone.now
+        timestamp: Time.now
       }, 500
     )
   end
@@ -47,7 +47,7 @@ class FirebrandApp
   def health_check
     server_info = {
       firebrand_status: 'healthy',
-      timestamp: Time.zone.now,
+      timestamp: Time.now,
       ruby_version: RUBY_VERSION
     }
     json_response(server_info, 200)
