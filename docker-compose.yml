@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  # Firebrand itself
+  app:
+    # Instructing docker to build the Ruby image using the Dockerfile in this project
+    build: .
+    ports:
+    # Maps host PORT 9999 to container PORT 9999
+      - "9999:9999"
+    environment:
+    # Defines environment variable REDIS_URL used in Firebrand
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+    # Ensure that Redis service starts before Firebrand
+      - redis
+    networks:
+    # Connects app service to same network as Redis
+      - rinha_network
+    # Resources definition
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5" # Exemplo: 0.5 CPU
+          memory: "128MB" # Exemplo: 128MB de RAM para o seu app
+
+  # Redis service
+  redis:
+    image: redis:7-alpine
+    ports:
+    # Optional: Maps Redis default Port to host. Useful for CLI access
+      - "6379:6379"
+    networks:
+    # Connects app service to same network as Redis
+      - rinha_network
+    # Resources definition
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5" # Exemplo: 0.5 CPU
+          memory: "128MB" # Exemplo: 128MB de RAM para o Redis
+
+# Defining a shared network so the services may communicate with themselves
+networks:
+  rinha_network:
+    driver: bridge
