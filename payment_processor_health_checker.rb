@@ -63,7 +63,7 @@ class PaymentProcessorHealthChecker
     http.read_timeout = 2
     http.open_timeout = 1
 
-    request = Net::HTTP::Get.new(health_url.path)
+    request = Net::HTTP::Get.new(url.path)
 
     begin
       response = http.request(request)
