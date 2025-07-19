@@ -11,9 +11,13 @@ services:
     environment:
     # Defines environment variable REDIS_URL used in Firebrand
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgres://rinha:rinha2025@postgres:5432/rinha_db
     depends_on:
-    # Ensure that Redis service starts before Firebrand
-      - redis
+    # Ensure that listed services starts before Firebrand
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     networks:
     # Connects app service to same network as Redis
       - rinha_network
@@ -33,12 +37,31 @@ services:
     networks:
     # Connects app service to same network as Redis
       - rinha_network
-    # Resources definition
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5" # Exemplo: 0.5 CPU
-          memory: "128MB" # Exemplo: 128MB de RAM para o Redis
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      # Database credentials
+      POSTGRES_USER: rinha
+      POSTGRES_PASSWORD: rinha2025
+      POSTGRES_DB: rinha_db
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - rinha_network
+    healthcheck:
+      # Command to check service health
+      test: ["CMD-SHELL", "pg_isready -U rinha -d rinha_db"]
+      # Verification frequency
+      interval: 5s
+      # Time limit to test command timeout
+      timeout: 5s
+      # Retry numbers to consider unhealthy
+      retries: 5
+      # Time in seconds to service start without healthcheck
+      start_period: 10s
 
 # Defining a shared network so the services may communicate with themselves
 networks:

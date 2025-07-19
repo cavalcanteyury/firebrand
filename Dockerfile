@@ -4,11 +4,8 @@ FROM ruby:3.4.4-slim-bullseye
 WORKDIR /app
 
 # Instll container deps
-RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends \
-    build-essential \
-    libssl-dev \
-    zlib1g-dev && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential libpq-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # Copies Gemfile and Gemfile.lock to container and bundle installs it

@@ -1,8 +1,10 @@
 GEM
   remote: https://rubygems.org/
   specs:
+    bigdecimal (3.2.2)
     connection_pool (2.5.3)
     nio4r (2.7.4)
+    pg (1.5.9)
     puma (6.6.0)
       nio4r (~> 2.0)
     rack (3.1.16)
@@ -12,16 +14,20 @@ GEM
       redis-client (>= 0.22.0)
     redis-client (0.25.1)
       connection_pool
+    sequel (5.94.0)
+      bigdecimal
 
 PLATFORMS
   ruby
   x86_64-darwin-24
 
 DEPENDENCIES
+  pg
   puma (~> 6.4)
   rack
   rackup
   redis
+  sequel
 
 RUBY VERSION
    ruby 3.4.4p34
