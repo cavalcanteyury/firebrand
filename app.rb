@@ -7,6 +7,9 @@ require 'rack/request'
 require 'redis'
 require 'sequel'
 
+require_relative 'payment_processor_health_checker'
+# require_relative 'payment_worker'
+
 # This shiny red demon orchestrate and
 # unleashes payments data for multiple processors
 class FirebrandApp
@@ -19,6 +22,15 @@ class FirebrandApp
     db_url = ENV.fetch('DATABASE_URL', 'postgres://rinha:rinha2025@postgres:5432/rinha_db')
     @db = Sequel.connect(db_url)
     @payments_table = @db[:payments]
+
+    @health_checker = PaymentProcessorHealthChecker.new
+    # @payment_worker = PaymentWorker.new(
+    #   redis: @redis,
+    #   database: @db,
+    #   health_checker: @health_checker
+    # )
+
+    start_services
   rescue Sequel::DatabaseConnectionError => e
     puts "[DatabaseError] Error connecting to database: #{e.message}"
     raise
@@ -35,6 +47,16 @@ class FirebrandApp
   end
 
   private
+
+  def start_services
+    @health_checker.start
+    #@payment_worker.start
+
+    at_exit do
+      #@payment_worker.stop
+      @health_checker.stop
+    end
+  end
 
   def routing(request)
     method = request.request_method
@@ -155,11 +177,11 @@ class FirebrandApp
 
     response_body = {
       default: {
-        totalRequests: default_summary[:totalRequest],
+        totalRequests: default_summary[:totalRequests],
         totalAmount: '%.2f' % default_summary[:totalAmount]
       },
       fallback: {
-        totalRequests: fallback_summary[:totalRequest],
+        totalRequests: fallback_summary[:totalRequests],
         totalAmount: '%.2f' % fallback_summary[:totalAmount]
       }
     }

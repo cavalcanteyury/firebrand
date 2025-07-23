@@ -21,6 +21,7 @@ services:
     networks:
     # Connects app service to same network as Redis
       - rinha_network
+      - payment-processor
     # Resources definition
     deploy:
       resources:
@@ -67,3 +68,5 @@ services:
 networks:
   rinha_network:
     driver: bridge
+  payment-processor:
+    external: true

@@ -7,6 +7,10 @@ require 'json'
 require 'thread'
 
 class PaymentProcessorHealthChecker
+  # all seconds
+  HEALTH_CHECK_INTERVAL = 5
+  HTTP_TIMEOUT = 2
+
   def initialize
     @health = {
       default: { failing: true, minResponseTime: 9999, last_checked_at: nil },
@@ -19,87 +23,147 @@ class PaymentProcessorHealthChecker
     @health_check_fallback_url = URI('http://payment-processor-fallback:8080/payments/service-health')
 
     # Creates a TimerTask for each processor
-    # execution_interval: frequency each 5 secs
-    # run_now: runs immediatelly when executed
-    # timeout_interval: timeout for the task itself, prevents deadlock
-    @default_health_checker = Concurrent::TimerTask.new(
-      execution_interval: 5,
-      run_now: true,
-      timeout_interval: 3
-    ) do
-      check_processor_health(:default, @health_check_default_url)
-    end
-
-    @fallback_health_checker = Concurrent::TimerTask.new(
-      execution_interval: 5,
-      run_now: true,
-      timeout_interval: 3
-    ) do
-      check_processor_health(:fallback, @health_check_fallback_url)
-    end
+    setup_health_checkers
   end
 
   def start
     @default_health_checker.execute
 
-    Thread.new { @fallback_health_checker.execute }
-    p '[PaymentProcessorHealthChecker] Starting...'
+    Thread.new do
+      sleep 0.2
+      @fallback_health_checker.execute
+    end
+
+    p '[HealthChecker] Starting...'
   end
 
   def stop
     @default_health_checker.shutdown
     @fallback_health_checker.shutdown
-    p '[PaymentProcessorHealthChecker] Stopped.'
+    p '[HealthChecker] Stopped.'
   end
 
   def get_health(processor_name)
     @health_mutex.synchronize { @health[processor_name].dup }
   end
 
+  def processors_health
+    @health_mutex.synchronize { @health.dup }
+  end
+
+  def choose_best_processor
+    health_data = processors_health
+
+    default_health = health_data[:default]
+    fallback_health = health_data[:fallback]
+
+    # if both unhealthy, choose less consecutive failures
+    if default_health[:failing] && fallback_health[:failing]
+      if default_health[:consecutive_failures] <= fallback_health[:consecutive_failures]
+        return :default
+      else
+        return :fallback
+      end
+    end
+
+    # if default is the only one healthy, use it
+    return :default if !default_health[:failing] && fallback_health[:failing]
+
+    # if fallback is the only one healthy, use it
+    return :fallback if default_health[:failing] && !fallback_health[:failing]
+
+    # if both is healthy, then we consider the minResponseTime, to know if we can
+    # choose default instead of fallback
+    if !default_health[:failing] && !fallback_health[:failing]
+      if default_health[:minResponseTime] > 1000 && 
+         fallback_health[:minResponseTime] < default_health[:minResponseTime] * 0.5
+        return :fallback
+      else
+        return :default
+      end
+    end
+
+    # Default is the... default lol
+    :default
+  end
+
   private
+
+  def setup_health_checkers
+    @default_health_checker = Concurrent::TimerTask.new(
+      execution_interval: HEALTH_CHECK_INTERVAL,
+      run_now: true
+    ) do
+      check_processor_health(:default, @health_check_default_url)
+    end
+
+    @fallback_health_checker = Concurrent::TimerTask.new(
+      execution_interval: HEALTH_CHECK_INTERVAL,
+      run_now: true
+    ) do
+      check_processor_health(:fallback, @health_check_fallback_url)
+    end
+  end
 
   def check_processor_health(processor_name, url)
     http = Net::HTTP.new(url.host, url.port)
-    http.read_timeout = 2
+
+    http.read_timeout = HTTP_TIMEOUT
     http.open_timeout = 1
 
     request = Net::HTTP::Get.new(url.path)
 
     begin
       response = http.request(request)
-
-      status_update = nil
-
-      if response.is_a?(Net:HTTPSuccess)
-        data = JSON.parse(response.body, symbolize_names: true)
-        status_update = {
-          failing: data[:failing],
-          minResponseTime: data[:minResponseTime],
-          last_checked_at: Time.now
-        }
-        p "[PaymentProcessorHealthChecker][#{processor_name}]: #{data[:failing] ? 'FAILING' : 'HEALTHY'} (minResponseTime: #{data[:minResponseTime]})"
-      elsif response.code == '429' # Exceeded calls
-        warn "[PaymentProcessorHealthChecker][#{processor_name}] Returned 429. Respect the limit..."
-      else
-        warn "[PaymentProcessorHealthChecker][#{processor_name}] failed with status #{response.code}."
-        status_update = { failing: true, last_checked_at: Time.now } # Considerar falhando
-      end
-
-      @health_mutex.synchronize do
-        @health[processor_name].merge!(status_update) if status_update
-      end
+      process_health_response(processor_name, response)
     rescue Net::ReadTimeout, Net::OpenTimeout => e
-      warn "[PaymentProcessorHealthChecker][#{processor_name}] Timed out: #{e.message}"
-      @health_mutex.synchronize do
-        @health[processor_name][:failing] = true
-        @health[processor_name][:last_checked_at] = Time.now
-      end
+      handle_health_check_error(processor_name, "Timeout: #{e.message}")
     rescue StandardError => e
-      warn "[PaymentProcessorHealthChecker][#{processor_name}] Unexpected error: #{e.message}"
-      @health_mutex.synchronize do
-        @health[processor_name][:failing] = true
-        @health[processor_name][:last_checked_at] = Time.now
-      end
+      handle_health_check_error(processor_name, "Unexpected error: #{e.message}")
+    end
+  end
+
+  def process_health_response(processor_name, response)
+    case response
+    in Net::HTTPSuccess
+      data = JSON.parse(response.body, symbolize_names: true)
+      update_health_status(processor_name, {
+        failing: data[:failing],
+        minResponseTime: data[:minResponseTime],
+        last_checked_at: Time.now,
+        consecutive_failures: data[:failing] ? @health[processor_name][:consecutive_failures] + 1 : 0
+      })
+
+      status = data[:failing] ? 'FAILING' : 'HEALTHY'
+      p "[HealthChecker][#{processor_name}]: #{status} (minResponseTime: #{data[:minResponseTime]}ms)"
+    in Net::HTTPTooManyRequests # 429
+      p "[HealthChecker][#{processor_name}] Rate limited (429). Respecting limit..."
+    else
+      p "[HealthChecker][#{processor_name}] HTTP #{response.code}: #{response.message}"
+      mark_as_failing(processor_name)
+    end
+  end
+
+  def handle_health_check_error(processor_name, error_message)
+    puts "[HealthChecker][#{processor_name}] #{error_message}"
+    mark_as_failing(processor_name)
+  end
+
+  def update_health_status(processor_name, status_update)
+    @health_mutex.synchronize do
+      @health[processor_name].merge!(status_update)
+    end
+  end
+
+  def mark_as_failing(processor_name)
+    failing_data = {
+      failing: true,
+      last_checked_at: Time.now,
+      consecutive_failures: @health[processor_name][:consecutive_failures] += 1
+    }
+
+    @health_mutex.synchronize do
+      @health[processor_name].merge!(failing_data)
     end
   end
 end
