@@ -1,17 +1,18 @@
 version: '3.8'
 
+# CPU MAX: 1.5
+# MEM MAX: 350MB
 services:
   # Firebrand itself
-  app:
+  api1: &api
     # Instructing docker to build the Ruby image using the Dockerfile in this project
     build: .
-    ports:
-    # Maps host PORT 9999 to container PORT 9999
-      - "9999:9999"
+    hostname: firebrand1
     environment:
     # Defines environment variable REDIS_URL used in Firebrand
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgres://rinha:rinha2025@postgres:5432/rinha_db
+      PRIMARY: "true"
     depends_on:
     # Ensure that listed services starts before Firebrand
       redis:
@@ -26,8 +27,41 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5" # Exemplo: 0.5 CPU
-          memory: "128MB" # Exemplo: 128MB de RAM para o seu app
+          cpus: "0.5"
+          memory: "100MB"
+
+  api2:
+    <<: *api
+    hostname: firebrand2
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgres://rinha:rinha2025@postgres:5432/rinha_db
+      PRIMARY: "false"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "60MB"
+
+  nginx:
+    image: nginx 
+    container_name: nginx
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - 9999:3000
+    networks:
+      - rinha_network
+    depends_on:
+      - redis
+      - api1
+      - api2
+    deploy:
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: "20MB"
+
 
   # Redis service
   redis:
@@ -38,6 +72,11 @@ services:
     networks:
     # Connects app service to same network as Redis
       - rinha_network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: "70MB"
 
   postgres:
     image: postgres:16-alpine
@@ -63,6 +102,11 @@ services:
       retries: 5
       # Time in seconds to service start without healthcheck
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: "100MB"
 
 # Defining a shared network so the services may communicate with themselves
 networks:

@@ -1,4 +1,4 @@
-FROM ruby:3.4.4-slim-bullseye
+FROM ruby:3.4 AS base
 
 # Defines o working directory for the container
 WORKDIR /app
@@ -16,6 +16,6 @@ RUN bundle install
 COPY . .
 
 # Exposing 9999 PORT that RACK should listen
-EXPOSE 9999
+EXPOSE 3000
 
-CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:9999"]
+CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:3000"]
