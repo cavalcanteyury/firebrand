@@ -7,20 +7,24 @@ require 'json'
 require 'thread'
 
 class PaymentProcessorHealthChecker
+  HEALTH_CACHE_KEY = 'health_checker:status'
+
   # all seconds
   HEALTH_CHECK_INTERVAL = 5
   HTTP_TIMEOUT = 2
 
-  def initialize
+  def initialize(redis)
+    @redis = redis
     @health = {
       default: { failing: true, minResponseTime: 9999, last_checked_at: nil },
       fallback: { failing: true, minResponseTime: 9999, last_checked_at: nil }
     }
     @health_mutex = Mutex.new
 
-    # Healthchecks URLs
-    @health_check_default_url = URI('http://payment-processor-default:8080/payments/service-health')
-    @health_check_fallback_url = URI('http://payment-processor-fallback:8080/payments/service-health')
+    @processor_urls = {
+      default: URI('http://payment-processor-default:8080/payments/service-health'),
+      fallback: URI('http://payment-processor-fallback:8080/payments/service-health')
+    }
 
     # Creates a TimerTask for each processor
     setup_health_checkers
@@ -41,10 +45,6 @@ class PaymentProcessorHealthChecker
     @default_health_checker.shutdown
     @fallback_health_checker.shutdown
     p '[HealthChecker] Stopped.'
-  end
-
-  def get_health(processor_name)
-    @health_mutex.synchronize { @health[processor_name].dup }
   end
 
   def processors_health
@@ -94,18 +94,19 @@ class PaymentProcessorHealthChecker
       execution_interval: HEALTH_CHECK_INTERVAL,
       run_now: true
     ) do
-      check_processor_health(:default, @health_check_default_url)
+      check_processor_health(:default)
     end
 
     @fallback_health_checker = Concurrent::TimerTask.new(
       execution_interval: HEALTH_CHECK_INTERVAL,
       run_now: true
     ) do
-      check_processor_health(:fallback, @health_check_fallback_url)
+      check_processor_health(:fallback)
     end
   end
 
-  def check_processor_health(processor_name, url)
+  def check_processor_health(processor_name)
+    url = @processor_urls[processor_name]
     http = Net::HTTP.new(url.host, url.port)
 
     http.read_timeout = HTTP_TIMEOUT
@@ -152,6 +153,11 @@ class PaymentProcessorHealthChecker
   def update_health_status(processor_name, status_update)
     @health_mutex.synchronize do
       @health[processor_name].merge!(status_update)
+
+      if @redis
+        @redis.hset(HEALTH_CACHE_KEY, processor_name.to_s, @health[processor_name].to_json)
+        @redis.expire(HEALTH_CACHE_KEY, 30)
+      end
     end
   end
 
