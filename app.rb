@@ -8,6 +8,7 @@ require 'redis'
 require 'sequel'
 
 require_relative 'payment_processor_health_checker'
+require_relative 'cached_health_checker'
 # require_relative 'payment_worker'
 
 # This shiny red demon orchestrate and
@@ -23,7 +24,14 @@ class FirebrandApp
     @db = Sequel.connect(db_url)
     @payments_table = @db[:payments]
 
-    @health_checker = PaymentProcessorHealthChecker.new
+    @is_primary = ENV.fetch('PRIMARY', 'false') == 'true'
+
+    if @is_primary
+      @health_checker = PaymentProcessorHealthChecker.new(@redis)
+    else
+      @health_checker = CachedHealthChecker.new(@redis)
+    end
+
     # @payment_worker = PaymentWorker.new(
     #   redis: @redis,
     #   database: @db,
