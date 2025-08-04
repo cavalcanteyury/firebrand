@@ -9,7 +9,7 @@ require 'sequel'
 
 require_relative 'payment_processor_health_checker'
 require_relative 'cached_health_checker'
-# require_relative 'payment_worker'
+require_relative 'payment_worker'
 
 # This shiny red demon orchestrate and
 # unleashes payments data for multiple processors
@@ -32,11 +32,11 @@ class FirebrandApp
       @health_checker = CachedHealthChecker.new(@redis)
     end
 
-    # @payment_worker = PaymentWorker.new(
-    #   redis: @redis,
-    #   database: @db,
-    #   health_checker: @health_checker
-    # )
+    @payment_worker = PaymentWorker.new(
+      redis: @redis,
+      database: @db,
+      health_checker: @health_checker
+    )
 
     start_services
   rescue Sequel::DatabaseConnectionError => e
@@ -58,10 +58,10 @@ class FirebrandApp
 
   def start_services
     @health_checker.start
-    #@payment_worker.start
+    @payment_worker.start
 
     at_exit do
-      #@payment_worker.stop
+      @payment_worker.stop
       @health_checker.stop
     end
   end
@@ -112,8 +112,8 @@ class FirebrandApp
     payment_request = {
       correlationId: payment_data[:correlationId],
       amount: payment_data[:amount].to_f,
-      requestedAt: Time.now.utc.iso8601,
-      enqueued_at: Time.now.utc.iso8601
+      requestedAt: Time.now.utc.iso8601(3),
+      enqueued_at: Time.now.utc.iso8601(3)
     }
 
     payment_indexed_json = payment_request.to_json
