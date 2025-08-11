@@ -3,23 +3,31 @@
 require 'net/http'
 require 'uri'
 require 'json'
+require 'concurrent-ruby'
+
+require_relative 'lib/redis_pool'
+require_relative 'lib/redis_storage'
 
 class PaymentWorker
   PAYMENT_QUEUE_KEY = 'payments:priority_queue'
+  MAX_RETRIES = 3
+  THREAD_POOL_SIZE = ENV.fetch('THREAD_POOL_SIZE', 10)
 
-  def initialize(redis:, database:, health_checker:)
-    @redis = redis
-    @db = database
-    @payments_table = @db[:payments]
-    @health_checker = health_checker
-
-    @processor_urls = {
-      default: URI('http://payment-processor-default:8080/payments'),
-      fallback: URI('http://payment-processor-fallback:8080/payments')
+  def initialize
+    @processors = {
+      default: {
+        url: URI('http://payment-processor-default:8080/payments'),
+        timeout: 0.8
+      },
+      fallback: {
+        url: URI('http://payment-processor-fallback:8080/payments'),
+        timeout: 0.2
+      }
     }
-
     @running = false
+    @storage = RedisStorage.new
     @worker_thread = nil
+    @thread_pool = Concurrent::FixedThreadPool.new(THREAD_POOL_SIZE)
   end
 
   def start
@@ -29,7 +37,7 @@ class PaymentWorker
     puts '[PaymentWorker] Starting payment processing...'
 
     @worker_thread = Thread.new do
-      process_payments_loop
+      feed_thread_pool_loop
     end
   end
 
@@ -38,81 +46,74 @@ class PaymentWorker
 
     puts '[PaymentWorker] Stopping...'
     @running = false
-    @worker_thread&.join(5)
+    @worker_thread&.join(10)
+    @thread_pool.shutdown
+    @thread_pool.wait_for_termination(10)
     puts '[PaymentWorker] Stopped.'
   end
 
   private
 
-  def process_payments_loop
+  def feed_thread_pool_loop
     while @running
       begin
-        payment_data, _amount = @redis.zpopmax(PAYMENT_QUEUE_KEY, 1)
+        RedisPool.with do |redis|
+          payment_data = redis.lpop(PAYMENT_QUEUE_KEY)
 
-        if payment_data.nil? || payment_data.empty?
-          sleep 0.2
-          next
+          if payment_data.nil? || payment_data.empty?
+            sleep 0.002
+            next
+          end
+
+          payment = JSON.parse(payment_data, symbolize_names: true)
+
+          @thread_pool.post do
+            process_payment(payment)
+          rescue StandardError => e
+            puts "[PaymentWorker][ThreadPool Error] Failed to process payment in thread: #{e.message}"
+            puts e.backtrace.join("\n")
+          end
         end
-
-        payment_json = payment_data
-        payment = JSON.parse(payment_json, symbolize_names: true)
-
-        process_payment(payment)
       rescue StandardError => e
-        # puts "[PaymentWorker] Error in loop: #{e.message}"
-        puts e
-        sleep 0.1
+        puts "[PaymentWorker][FeedLoop Error] Error in loop: #{e.message}"
+        puts e.backtrace.join("\n")
+        sleep 1
       end
     end
   end
 
   def process_payment(payment)
-    puts "[PaymentWorker] Processing #{payment[:correlationId]} (#{payment[:amount]})"
+    MAX_RETRIES.times do |try|
+      return if send_to_processor(payment, :default)
 
-    chosen_processor = @health_checker.choose_best_processor
-    success = send_to_processor(payment, chosen_processor)
-
-    unless success
-      other_processor = chosen_processor == :default ? :fallback : :default
-      puts "[PaymentWorker] Retrying with #{other_processor} processor"
-      success = send_to_processor(payment, other_processor)
-      chosen_processor = other_processor if success
+      sleep(0.003 * (try + 1)) if try < 2
     end
 
-    if success
-      save_to_database(payment, chosen_processor)
-      puts "[PaymentWorker] ✅ Payment #{payment[:correlationId]} processed via #{chosen_processor}"
-    else
-      puts "[PaymentWorker] ❌ Failed to process payment #{payment[:correlationId]}"
-      # Aqui você pode recolocar na fila ou logar para análise posterior
-    end
+    return if send_to_processor(payment, :fallback)
+
+    puts '💀 Both processors failed 💀'
   end
 
   def send_to_processor(payment, processor)
-    url = @processor_urls[processor]
+    url = @processors[processor][:url]
+    timeout = @processors[processor][:timeout]
 
-    http = Net::HTTP.new(url.host, url.port)
-    http.read_timeout = 10
-    http.open_timeout = 5
+    Net::HTTP.start(url.host, url.port) do |http|
+      http.open_timeout = timeout
+      http.read_timeout = timeout
 
-    request = Net::HTTP::Post.new(url.path)
-    request['Content-Type'] = 'application/json'
+      request = Net::HTTP::Post.new(url.path, 'Content-Type' => 'application/json')
+      request.body = payment.to_json
+      response = http.request(request)
 
-    body = {
-      correlationId: payment[:correlationId],
-      amount: payment[:amount],
-      requestedAt: payment[:requestedAt]
-    }.to_json
-
-    request.body = body
-    response = http.request(request)
-
-    if response.is_a?(Net::HTTPSuccess)
-      puts "[PaymentWorker] Sent to #{processor}: HTTP #{response.code}"
-      true
-    else
-      puts "[PaymentWorker] Failed on #{processor}: HTTP #{response.code}"
-      false
+      if response.is_a?(Net::HTTPSuccess)
+        save_to_storage(payment, processor)
+        puts "[PaymentWorker] ✅ Payment #{payment[:correlationId]} processed via #{processor}: HTTP #{response.code}"
+        true
+      else
+        puts "[PaymentWorker] ❌ Failed to process payment #{payment[:correlationId]} via #{processor}: HTTP #{response.code}"
+        false
+      end
     end
   rescue Net::ReadTimeout, Net::OpenTimeout => e
     puts "[PaymentWorker] Timeout on #{processor}: #{e.message}"
@@ -122,15 +123,12 @@ class PaymentWorker
     false
   end
 
-  def save_to_database(payment, processor_used)
-    @payments_table.insert(
+  def save_to_storage(payment, processor_used)
+    @storage.save(
       correlation_id: payment[:correlationId],
+      processor_used: processor_used.to_s,
       amount: payment[:amount],
-      requested_at: payment[:requestedAt],
-      processor_type: processor_used.to_s,
-      processed_at: Time.now.utc
+      requested_at: payment[:requestedAt]
     )
-  rescue StandardError => e
-    puts "[PaymentWorker] Database error: #{e.message}"
   end
 end

@@ -1,3 +1,4 @@
+
 CREATE UNLOGGED TABLE payments (
     correlationId UUID PRIMARY KEY,
     amount DECIMAL NOT NULL,

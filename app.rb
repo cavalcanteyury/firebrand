@@ -5,43 +5,21 @@ require 'json'
 require 'time'
 require 'rack/request'
 require 'redis'
-require 'sequel'
 
-require_relative 'payment_processor_health_checker'
-require_relative 'cached_health_checker'
 require_relative 'payment_worker'
+require_relative 'lib/redis_pool'
+require_relative 'lib/redis_storage'
 
 # This shiny red demon orchestrate and
 # unleashes payments data for multiple processors
 class FirebrandApp
+  PAYMENT_QUEUE_KEY = 'payments:priority_queue'
+
   def initialize
-    # Redis config
-    @redis = Redis.new(url: ENV.fetch('REDIS_URL', 'redis://localhost:6379/0'))
-    @payment_queue_key = 'payments:priority_queue'
+    @payment_worker = PaymentWorker.new
+    @storage = RedisStorage.new
 
-    # PostgreSQL config
-    db_url = ENV.fetch('DATABASE_URL', 'postgres://rinha:rinha2025@postgres:5432/rinha_db')
-    @db = Sequel.connect(db_url)
-    @payments_table = @db[:payments]
-
-    @is_primary = ENV.fetch('PRIMARY', 'false') == 'true'
-
-    if @is_primary
-      @health_checker = PaymentProcessorHealthChecker.new(@redis)
-    else
-      @health_checker = CachedHealthChecker.new(@redis)
-    end
-
-    @payment_worker = PaymentWorker.new(
-      redis: @redis,
-      database: @db,
-      health_checker: @health_checker
-    )
-
-    start_services
-  rescue Sequel::DatabaseConnectionError => e
-    puts "[DatabaseError] Error connecting to database: #{e.message}"
-    raise
+    start
   end
 
   def call(env)
@@ -56,13 +34,11 @@ class FirebrandApp
 
   private
 
-  def start_services
-    @health_checker.start
+  def start
     @payment_worker.start
 
     at_exit do
       @payment_worker.stop
-      @health_checker.stop
     end
   end
 
@@ -71,8 +47,6 @@ class FirebrandApp
     path = request.path_info
 
     case [method, path]
-    in ['GET', '/health']
-      health_check
     in ['POST', '/payments']
       handle_payment(request)
     in ['GET', '/payments-summary']
@@ -96,15 +70,6 @@ class FirebrandApp
     json_response({ error: 'Not Found' }, 404)
   end
 
-  def health_check
-    server_info = {
-      firebrand_status: 'healthy',
-      timestamp: Time.now,
-      ruby_version: RUBY_VERSION
-    }
-    json_response(server_info, 200)
-  end
-
   def handle_payment(request)
     body = request.body.read
     payment_data = parse_body(body)
@@ -116,85 +81,20 @@ class FirebrandApp
       enqueued_at: Time.now.utc.iso8601(3)
     }
 
-    payment_indexed_json = payment_request.to_json
-    amount_score = payment_request[:amount]
+    RedisPool.with do |redis|
+      redis.rpush(PAYMENT_QUEUE_KEY, payment_request.to_json)
+    end
 
-    @redis.zadd(@payment_queue_key, amount_score, payment_indexed_json)
-
-    json_response({ message: 'Pagamento enfileirado com sucesso para processamento.' }, 201)
+    json_response({ message: 'Pagamento enfileirado com sucesso' }, 201)
   end
 
   def handle_payments_summary(request)
     from_param = request.params['from']
     to_param = request.params['to']
 
-    begin
-      from_time = from_param ? Time.parse(from_param).utc : nil
-      to_time = to_param ? Time.parse(to_param).utc : nil
-    rescue ArgumentError
-      return json_response({error: 'Invalid date format for params'}, 400)
-    end
+    summary = @storage.payments_summary(from_param, to_param)
 
-    where_clause_parts = []
-    sql_parameters = {}
-
-    if from_time && to_time
-      where_clause_parts << 'processed_at BETWEEN :from_time AND :to_time'
-      sql_parameters[:from_time] = from_time
-      sql_parameters[:to_time] = to_time
-    elsif from_time
-      where_clause_parts << 'processed_at >= :from_time'
-      sql_parameters[:from_time] = from_time
-    elsif to_time
-      where_clause_parts << 'processed_at <= :to_time'
-      sql_parameters[:to_time] = to_time
-    end
-
-    where_sql = where_clause_parts.empty? ? '' : "WHERE #{where_clause_parts.join(' AND ')}"
-
-    sql_query = <<~SQL
-      SELECT
-          processor_type,
-          COUNT(correlation_id) AS total_requests,
-          SUM(amount) AS total_amount
-      FROM
-          payments
-      #{where_sql}
-      GROUP BY
-          processor_type;
-    SQL
-
-    results = @db.fetch(sql_query, sql_parameters).all
-
-    default_summary = { totalRequests: 0, totalAmount: BigDecimal('0.00') }
-    fallback_summary = { totalRequests: 0, totalAmount: BigDecimal('0.00') }
-
-    results.each do |row|
-      processor_type = row[:processor_type]
-      requests = row[:total_requests]
-      amount = row[:total_amount]
-
-      if processor_type == 'default'
-        default_summary[:totalRequests] = requests
-        default_summary[:totalAmount] = amount
-      elsif processor_type == 'fallback'
-        fallback_summary[:totalRequests] = requests
-        fallback_summary[:totalAmount] = amount
-      end
-    end
-
-    response_body = {
-      default: {
-        totalRequests: default_summary[:totalRequests],
-        totalAmount: '%.2f' % default_summary[:totalAmount]
-      },
-      fallback: {
-        totalRequests: fallback_summary[:totalRequests],
-        totalAmount: '%.2f' % fallback_summary[:totalAmount]
-      }
-    }
-
-    json_response(response_body, 200)
+    json_response(summary, 200)
   end
 
   def parse_body(body)
