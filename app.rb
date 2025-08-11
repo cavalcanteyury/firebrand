@@ -4,7 +4,6 @@ require 'rack'
 require 'json'
 require 'time'
 require 'rack/request'
-require 'redis'
 
 require_relative 'payment_worker'
 require_relative 'lib/redis_pool'
