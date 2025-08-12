@@ -77,7 +77,7 @@ services:
       resources:
         limits:
           cpus: "0.2"
-          memory: "40MB"
+          memory: "50MB"
 
 volumes:
   redis_data:
