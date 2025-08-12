@@ -6,7 +6,7 @@ services:
   # Firebrand itself
   api01: &api
     # Instructing docker to build the Ruby image using the Dockerfile in this project
-    build: .
+    image: yurypcf/rinha-de-backend-2025-ruby-firebrand
     container_name: firebrand01
     hostname: firebrand01
     environment:
