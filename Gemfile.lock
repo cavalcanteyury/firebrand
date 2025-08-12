@@ -3,8 +3,6 @@ GEM
   specs:
     concurrent-ruby (1.3.5)
     connection_pool (2.5.3)
-    json (2.13.2)
-    logger (1.7.0)
     nio4r (2.7.4)
     puma (6.6.0)
       nio4r (~> 2.0)
@@ -15,12 +13,6 @@ GEM
       redis-client (>= 0.22.0)
     redis-client (0.25.1)
       connection_pool
-    sidekiq (8.0.7)
-      connection_pool (>= 2.5.0)
-      json (>= 2.9.0)
-      logger (>= 1.6.2)
-      rack (>= 3.1.0)
-      redis-client (>= 0.23.2)
 
 PLATFORMS
   ruby
@@ -29,11 +21,10 @@ PLATFORMS
 DEPENDENCIES
   concurrent-ruby
   connection_pool
-  puma (~> 6.4)
+  puma
   rack
   rackup
   redis
-  sidekiq
 
 RUBY VERSION
    ruby 3.4.4p34

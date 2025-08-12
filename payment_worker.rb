@@ -10,20 +10,12 @@ require_relative 'lib/redis_storage'
 
 class PaymentWorker
   PAYMENT_QUEUE_KEY = 'payments:priority_queue'
-  MAX_RETRIES = 3
-  THREAD_POOL_SIZE = ENV.fetch('THREAD_POOL_SIZE', 10)
+  DEFAULT_TIMEOUT = 0.2
+  FALLBACK_TIMEOUT = 0.1
+  MAX_RETRIES = 5
+  THREAD_POOL_SIZE = ENV.fetch('THREAD_POOL_SIZE', 5)
 
   def initialize
-    @processors = {
-      default: {
-        url: URI('http://payment-processor-default:8080/payments'),
-        timeout: 0.8
-      },
-      fallback: {
-        url: URI('http://payment-processor-fallback:8080/payments'),
-        timeout: 0.2
-      }
-    }
     @running = false
     @storage = RedisStorage.new
     @worker_thread = nil
@@ -60,12 +52,17 @@ class PaymentWorker
         RedisPool.with do |redis|
           payment_data = redis.lpop(PAYMENT_QUEUE_KEY)
 
-          if payment_data.nil? || payment_data.empty?
-            sleep 0.002
+          if payment_data.nil?
+            sleep 0.02
             next
           end
 
           payment = JSON.parse(payment_data, symbolize_names: true)
+
+          if redis.get("processed:#{payment[:correlationId]}")
+            sleep 0.02
+            next
+          end
 
           @thread_pool.post do
             process_payment(payment)
@@ -84,30 +81,34 @@ class PaymentWorker
 
   def process_payment(payment)
     MAX_RETRIES.times do |try|
-      return if send_to_processor(payment, :default)
+      if send_to_processor(payment, :default, DEFAULT_TIMEOUT)
+        save_to_storage(payment, :default)
+        return
+      end
 
-      sleep(0.003 * (try + 1)) if try < 2
+      sleep(0.003 * (try + 1)) if try < 4
     end
 
-    return if send_to_processor(payment, :fallback)
+    if send_to_processor(payment, :fallback, FALLBACK_TIMEOUT)
+      save_to_storage(payment, :fallback)
+      return
+    end
 
     puts '💀 Both processors failed 💀'
   end
 
-  def send_to_processor(payment, processor)
-    url = @processors[processor][:url]
-    timeout = @processors[processor][:timeout]
+  def send_to_processor(payment, processor, timeout)
+    uri = URI("http://payment-processor-#{processor}:8080/payments")
 
-    Net::HTTP.start(url.host, url.port) do |http|
+    Net::HTTP.start(uri.host, uri.port) do |http|
       http.open_timeout = timeout
       http.read_timeout = timeout
 
-      request = Net::HTTP::Post.new(url.path, 'Content-Type' => 'application/json')
+      request = Net::HTTP::Post.new(uri.path, 'Content-Type' => 'application/json')
       request.body = payment.to_json
       response = http.request(request)
 
       if response.is_a?(Net::HTTPSuccess)
-        save_to_storage(payment, processor)
         puts "[PaymentWorker] ✅ Payment #{payment[:correlationId]} processed via #{processor}: HTTP #{response.code}"
         true
       else

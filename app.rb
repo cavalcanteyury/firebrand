@@ -76,8 +76,7 @@ class FirebrandApp
     payment_request = {
       correlationId: payment_data[:correlationId],
       amount: payment_data[:amount].to_f,
-      requestedAt: Time.now.utc.iso8601(3),
-      enqueued_at: Time.now.utc.iso8601(3)
+      requestedAt: Time.now.utc.iso8601(3)
     }
 
     RedisPool.with do |redis|

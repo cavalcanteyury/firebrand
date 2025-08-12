@@ -14,9 +14,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       RUBY_YJIT_ENABLE: 1
       PUMA_WORKERS: 1
-      PUMA_MIN_THREADS: 10
-      PUMA_MAX_THREADS: 16
-      THREAD_POOL_SIZE: 10
+      PUMA_MIN_THREADS: 5
+      PUMA_MAX_THREADS: 10
+      THREAD_POOL_SIZE: 5
     depends_on:
     # Ensure that listed services starts before Firebrand
       redis:

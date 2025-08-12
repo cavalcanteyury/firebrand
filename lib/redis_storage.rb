@@ -12,7 +12,7 @@ class RedisStorage
       correlationId: correlation_id,
       amount: amount,
       processor: processor_used,
-      requestedAt: Time.now.utc.iso8601
+      requestedAt: requested_at
     }
 
     RedisPool.with do |redis|
@@ -28,23 +28,6 @@ class RedisStorage
   end
 
   def payments_summary(from_time, to_time)
-    return summary_from_counters if from_time.nil? && to_time.nil?
-
-    process_summary(from_time, to_time)
-  end
-
-  def summary_from_counters
-    RedisPool.with do |redis|
-      %w[default fallback].each_with_object({}) do |type, hash|
-        hash[type] = {
-          totalRequests: redis.get("totalRequests:#{type}").to_i,
-          totalAmount: '%.2f' % redis.get("totalAmount:#{type}").to_f
-        }
-      end
-    end
-  end
-
-  def process_summary(from_time, to_time)
     summary = {
       default: { totalRequests: 0, totalAmount: 0.0 },
       fallback: { totalRequests: 0, totalAmount: 0.0 }
