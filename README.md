@@ -5,14 +5,21 @@ Uma contribuição modesta e com objetivo de estudos para Rinha de Backend 2025 
 
 ## Stack
 
-* Ruby 3.4.4
+* Ruby 3.4.4 (Rack & Puma)
+* Redis
+* Nginx
+* Docker
 
-## Usage
+## Setup
 
+Na raíz do projeto...
 ```bash
-rackup -p 3000
+# Sobe os processadores da rinha
+make processors.up
 
-curl http://localhost:3000/health
+# Sobe a API
+make firebrand.up
+
+# Roda os testes no K6
+make rinha.test
 ```
-
-## WIP
